@@ -1,28 +1,31 @@
+
 const express = require("express");
 const pool = require("../config/db");
 const authMiddleware = require("../middleware/authMiddleware");
+const { calculatePricing } = require("../utils/pricing");
 
 const router = express.Router();
 
 // GET SINGLE ORDER DETAILS
 router.get("/:id", authMiddleware, async (req, res) => {
     try {
-        const orderId = req.params.id;
+        const orderId = Number(req.params.id);
 
-        // Get order
+        if (!Number.isInteger(orderId) || orderId <= 0) {
+            return res.status(400).json({
+                message: "Invalid order ID"
+            });
+        }
+
         const orderResult = await pool.query(
-            `
-            SELECT
-                orders.id,
-                orders.total_amount,
-                orders.status,
-                orders.payment_status,
-                orders.shipping_address,
-                orders.created_at
-            FROM orders
-            WHERE orders.id = $1
-            AND orders.user_id = $2
-            `,
+
+            `SELECT id, total_amount, subtotal_amount,
+        bundle_discount, percentage_discount, shipping_fee,
+        status, payment_status, inventory_deducted,
+        shipping_address, created_at
+ FROM orders
+
+             WHERE id = $1 AND user_id = $2`,
             [orderId, req.user.id]
         );
 
@@ -32,34 +35,24 @@ router.get("/:id", authMiddleware, async (req, res) => {
             });
         }
 
-        // Get order items
         const itemsResult = await pool.query(
-            `
-            SELECT
-                order_items.id,
-                order_items.plant_id,
-                plants.name,
-                order_items.quantity,
-                order_items.price,
-                (order_items.quantity * order_items.price) AS subtotal
-            FROM order_items
-            JOIN plants
-                ON order_items.plant_id = plants.id
-            WHERE order_items.order_id = $1
-            ORDER BY order_items.id ASC
-            `,
+            `SELECT oi.id, oi.plant_id, p.name, oi.quantity, oi.price,
+                    (oi.quantity * oi.price) AS subtotal
+             FROM order_items oi
+             JOIN plants p ON oi.plant_id = p.id
+             WHERE oi.order_id = $1
+             ORDER BY oi.id ASC`,
             [orderId]
         );
 
-        res.json({
+        return res.json({
             order: orderResult.rows[0],
             items: itemsResult.rows
         });
-
     } catch (error) {
-        console.error("❌ Error fetching order details:", error);
+        console.error("Error fetching order details:", error);
 
-        res.status(500).json({
+        return res.status(500).json({
             message: "Failed to fetch order details"
         });
     }
@@ -69,62 +62,53 @@ router.get("/:id", authMiddleware, async (req, res) => {
 router.get("/", authMiddleware, async (req, res) => {
     try {
         const result = await pool.query(
-            `
-            SELECT
-                orders.id,
-                orders.total_amount,
-                orders.status,
-                orders.payment_status,
-                orders.shipping_address,
-                orders.created_at
-            FROM orders
-            WHERE orders.user_id = $1
-            ORDER BY orders.created_at DESC
-            `,
+            `SELECT id, total_amount, subtotal_amount,
+                    bundle_discount, percentage_discount, shipping_fee,
+                    status, payment_status, shipping_address, created_at
+             FROM orders
+             WHERE user_id = $1
+             ORDER BY created_at DESC`,
             [req.user.id]
         );
 
-        res.json(result.rows);
-
+        return res.json(result.rows);
     } catch (error) {
-        console.error("❌ Error fetching orders:", error);
+        console.error("Error fetching orders:", error);
 
-        res.status(500).json({
+        return res.status(500).json({
             message: "Failed to fetch orders"
         });
     }
 });
 
 // CREATE ORDER FROM CART
+// Prices come from the database.
+// Stock is checked here but is not deducted until payment is verified.
 router.post("/", authMiddleware, async (req, res) => {
-    const client = await pool.connect();
+    let client;
 
     try {
-        const { shipping_address } = req.body;
+        const shippingAddress =
+            typeof req.body?.shipping_address === "string"
+                ? req.body.shipping_address.trim()
+                : "";
 
-        if (!shipping_address) {
+        if (!shippingAddress) {
             return res.status(400).json({
                 message: "Shipping address is required"
             });
         }
 
+        client = await pool.connect();
         await client.query("BEGIN");
 
-        // Get user's cart
         const cartResult = await client.query(
-            `
-            SELECT
-                cart_items.plant_id,
-                cart_items.quantity,
-                plants.name,
-                plants.price,
-                plants.stock
-            FROM cart_items
-            JOIN plants
-                ON cart_items.plant_id = plants.id
-            WHERE cart_items.user_id = $1
-            FOR UPDATE
-            `,
+            `SELECT ci.plant_id, ci.quantity, p.name, p.price, p.stock
+             FROM cart_items ci
+             JOIN plants p ON p.id = ci.plant_id
+             WHERE ci.user_id = $1
+             ORDER BY ci.plant_id
+             FOR UPDATE OF ci, p`,
             [req.user.id]
         );
 
@@ -136,47 +120,68 @@ router.post("/", authMiddleware, async (req, res) => {
             });
         }
 
-        // Check stock
         for (const item of cartResult.rows) {
-            if (item.stock < item.quantity) {
+            if (
+                !Number.isInteger(Number(item.quantity)) ||
+                Number(item.quantity) <= 0 ||
+                !Number.isInteger(Number(item.stock)) ||
+                Number(item.stock) < Number(item.quantity)
+            ) {
                 await client.query("ROLLBACK");
 
-                return res.status(400).json({
+                return res.status(409).json({
                     message: `Not enough stock for ${item.name}`
                 });
             }
         }
 
-        // Calculate total
-        const totalAmount = cartResult.rows.reduce(
-            (total, item) =>
-                total + Number(item.price) * item.quantity,
-            0
-        );
+        // Calculate all promotions using trusted database prices.
+        let pricing;
 
-        // Create order
+        try {
+            pricing = calculatePricing(cartResult.rows);
+        } catch (pricingError) {
+            console.error("Order pricing error:", pricingError);
+
+            await client.query("ROLLBACK");
+
+            return res.status(500).json({
+                message: "Unable to calculate order pricing"
+            });
+        }
+
         const orderResult = await client.query(
-            `
-            INSERT INTO orders
-                (user_id, total_amount, shipping_address)
-            VALUES
-                ($1, $2, $3)
-            RETURNING *
-            `,
-            [req.user.id, totalAmount, shipping_address]
+            `INSERT INTO orders
+                (
+                    user_id,
+                    total_amount,
+                    subtotal_amount,
+                    bundle_discount,
+                    percentage_discount,
+                    shipping_fee,
+                    shipping_address
+                )
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING *`,
+            [
+                req.user.id,
+                pricing.total_amount,
+                pricing.subtotal_amount,
+                pricing.bundle_discount,
+                pricing.percentage_discount,
+                pricing.shipping_fee,
+                shippingAddress
+            ]
         );
 
         const order = orderResult.rows[0];
 
-        // Create order items and reduce stock
+        // Save original unit prices for order history and auditing.
         for (const item of cartResult.rows) {
             await client.query(
-                `
-                INSERT INTO order_items
+                `INSERT INTO order_items
                     (order_id, plant_id, quantity, price)
-                VALUES
-                    ($1, $2, $3, $4)
-                `,
+                 VALUES ($1, $2, $3, $4)`,
                 [
                     order.id,
                     item.plant_id,
@@ -184,41 +189,33 @@ router.post("/", authMiddleware, async (req, res) => {
                     item.price
                 ]
             );
-
-            await client.query(
-                `
-                UPDATE plants
-                SET stock = stock - $1
-                WHERE id = $2
-                `,
-                [item.quantity, item.plant_id]
-            );
         }
 
-        // Clear cart
-        await client.query(
-            "DELETE FROM cart_items WHERE user_id = $1",
-            [req.user.id]
-        );
-
+        // Keep the cart and stock unchanged until payment succeeds.
         await client.query("COMMIT");
 
-        res.status(201).json({
-            message: "Order created successfully",
+        return res.status(201).json({
+            message: "Order created successfully. Payment is pending.",
             order
         });
-
     } catch (error) {
-        await client.query("ROLLBACK");
+        if (client) {
+            try {
+                await client.query("ROLLBACK");
+            } catch (rollbackError) {
+                console.error("Order rollback error:", rollbackError);
+            }
+        }
 
-        console.error("❌ Error creating order:", error);
+        console.error("Error creating order:", error);
 
-        res.status(500).json({
+        return res.status(500).json({
             message: "Failed to create order"
         });
-
     } finally {
-        client.release();
+        if (client) {
+            client.release();
+        }
     }
 });
 

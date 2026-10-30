@@ -1,8 +1,19 @@
+
 const express = require("express");
 const pool = require("../config/db");
 const authMiddleware = require("../middleware/authMiddleware");
 
 const router = express.Router();
+
+// Validate positive whole-number quantities and IDs.
+function isPositiveInteger(value) {
+    return (
+        (typeof value === "number" ||
+            (typeof value === "string" && value.trim() !== "")) &&
+        Number.isSafeInteger(Number(value)) &&
+        Number(value) > 0
+    );
+}
 
 // GET USER CART
 router.get("/", authMiddleware, async (req, res) => {
@@ -10,29 +21,27 @@ router.get("/", authMiddleware, async (req, res) => {
         const result = await pool.query(
             `
             SELECT
-                cart_items.id,
-                cart_items.plant_id,
-                plants.name,
-                plants.description,
-                plants.price,
-                plants.image_url,
-                cart_items.quantity,
-                (plants.price * cart_items.quantity) AS subtotal
-            FROM cart_items
-            JOIN plants
-            ON cart_items.plant_id = plants.id
-            WHERE cart_items.user_id = $1
-            ORDER BY cart_items.id ASC
+                ci.id,
+                ci.plant_id,
+                p.name,
+                p.description,
+                p.price,
+                p.image_url,
+                ci.quantity,
+                (p.price * ci.quantity) AS subtotal,
+                p.stock
+            FROM cart_items ci
+            JOIN plants p ON ci.plant_id = p.id
+            WHERE ci.user_id = $1
+            ORDER BY ci.id ASC
             `,
             [req.user.id]
         );
 
-        res.json(result.rows);
-
+        return res.json(result.rows);
     } catch (error) {
-        console.error("❌ Error fetching cart:", error);
-
-        res.status(500).json({
+        console.error("Error fetching cart:", error);
+        return res.status(500).json({
             message: "Failed to fetch cart"
         });
     }
@@ -40,52 +49,67 @@ router.get("/", authMiddleware, async (req, res) => {
 
 // ADD ITEM TO CART
 router.post("/", authMiddleware, async (req, res) => {
+    const { plant_id, quantity } = req.body || {};
+
+    if (!isPositiveInteger(plant_id) || !isPositiveInteger(quantity)) {
+        return res.status(400).json({
+            message: "Plant ID and a positive whole-number quantity are required"
+        });
+    }
+
+    const plantId = Number(plant_id);
+    const requestedQuantity = Number(quantity);
+    let client;
+
     try {
-        const { plant_id, quantity } = req.body;
+        client = await pool.connect();
+        await client.query("BEGIN");
 
-        if (!plant_id || !quantity || quantity < 1) {
-            return res.status(400).json({
-                message: "Plant ID and valid quantity are required"
-            });
-        }
-
-        const plant = await pool.query(
-            "SELECT id, name, price, stock FROM plants WHERE id = $1",
-            [plant_id]
+        // Lock the plant row to serialize stock-sensitive cart changes.
+        const plantResult = await client.query(
+            `SELECT id, name, price, stock
+             FROM plants
+             WHERE id = $1
+             FOR UPDATE`,
+            [plantId]
         );
 
-        if (plant.rows.length === 0) {
+        if (plantResult.rows.length === 0) {
+            await client.query("ROLLBACK");
             return res.status(404).json({
                 message: "Plant not found"
             });
         }
 
-        // Check existing cart quantity
-const existingCartItem = await pool.query(
-    `
-    SELECT quantity
-    FROM cart_items
-    WHERE user_id = $1
-    AND plant_id = $2
-    `,
-    [req.user.id, plant_id]
-);
+        const plant = plantResult.rows[0];
 
-const existingQuantity =
-    existingCartItem.rows.length > 0
-        ? existingCartItem.rows[0].quantity
-        : 0;
+        const existingResult = await client.query(
+            `SELECT id, quantity
+             FROM cart_items
+             WHERE user_id = $1 AND plant_id = $2
+             FOR UPDATE`,
+            [req.user.id, plantId]
+        );
 
-const totalQuantity = existingQuantity + quantity;
+        const existingQuantity = existingResult.rows.length
+            ? Number(existingResult.rows[0].quantity)
+            : 0;
 
-// Check total quantity against stock
-if (totalQuantity > plant.rows[0].stock) {
-    return res.status(400).json({
-        message: `Only ${plant.rows[0].stock} units available in stock`
-    });
-}
+        const totalQuantity = existingQuantity + requestedQuantity;
 
-        const result = await pool.query(
+        if (
+            plant.stock === null ||
+            totalQuantity > Number(plant.stock)
+        ) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({
+                message: `Only ${plant.stock ?? 0} units available in stock`,
+                available_stock: plant.stock ?? 0,
+                cart_quantity: existingQuantity
+            });
+        }
+
+        const result = await client.query(
             `
             INSERT INTO cart_items (user_id, plant_id, quantity)
             VALUES ($1, $2, $3)
@@ -93,104 +117,128 @@ if (totalQuantity > plant.rows[0].stock) {
             DO UPDATE SET quantity = cart_items.quantity + EXCLUDED.quantity
             RETURNING *
             `,
-            [req.user.id, plant_id, quantity]
+            [req.user.id, plantId, requestedQuantity]
         );
 
-        res.status(201).json({
+        await client.query("COMMIT");
+
+        return res.status(201).json({
             message: "Item added to cart",
             cartItem: result.rows[0]
         });
-
     } catch (error) {
-        console.error("❌ Error adding item to cart:", error);
+        if (client) {
+            try {
+                await client.query("ROLLBACK");
+            } catch (rollbackError) {
+                console.error("Cart rollback error:", rollbackError);
+            }
+        }
 
-        res.status(500).json({
+        console.error("Error adding item to cart:", error);
+        return res.status(500).json({
             message: "Failed to add item to cart"
         });
+    } finally {
+        if (client) client.release();
     }
 });
 
 // UPDATE CART ITEM QUANTITY
 router.put("/:id", authMiddleware, async (req, res) => {
+    const { quantity } = req.body || {};
+    const cartItemId = req.params.id;
+
+    if (!isPositiveInteger(cartItemId) || !isPositiveInteger(quantity)) {
+        return res.status(400).json({
+            message: "Cart item ID and a positive whole-number quantity are required"
+        });
+    }
+
+    let client;
+
     try {
-        const { quantity } = req.body;
-        const cartItemId = req.params.id;
+        client = await pool.connect();
+        await client.query("BEGIN");
 
-        if (!quantity || quantity < 1) {
-            return res.status(400).json({
-                message: "Valid quantity is required"
-            });
-        }
-
-        // Get cart item with plant stock
-        const cartItem = await pool.query(
-            `
-            SELECT
-                cart_items.id,
-                cart_items.plant_id,
-                plants.stock
-            FROM cart_items
-            JOIN plants
-                ON cart_items.plant_id = plants.id
-            WHERE cart_items.id = $1
-            AND cart_items.user_id = $2
-            `,
-            [cartItemId, req.user.id]
+        const cartResult = await client.query(
+            `SELECT ci.id, ci.plant_id, p.name, p.stock
+             FROM cart_items ci
+             JOIN plants p ON p.id = ci.plant_id
+             WHERE ci.id = $1 AND ci.user_id = $2
+             FOR UPDATE OF ci, p`,
+            [Number(cartItemId), req.user.id]
         );
 
-        if (cartItem.rows.length === 0) {
+        if (cartResult.rows.length === 0) {
+            await client.query("ROLLBACK");
             return res.status(404).json({
                 message: "Cart item not found"
             });
         }
 
-        const availableStock = cartItem.rows[0].stock;
+        const item = cartResult.rows[0];
+        const requestedQuantity = Number(quantity);
 
-        // Check requested quantity against stock
-        if (quantity > availableStock) {
-            return res.status(400).json({
-                message: `Only ${availableStock} units available in stock`
+        if (
+            item.stock === null ||
+            requestedQuantity > Number(item.stock)
+        ) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({
+                message: `Only ${item.stock ?? 0} units available in stock`,
+                available_stock: item.stock ?? 0
             });
         }
 
-        const result = await pool.query(
-            `
-            UPDATE cart_items
-            SET quantity = $1
-            WHERE id = $2
-            AND user_id = $3
-            RETURNING *
-            `,
-            [quantity, cartItemId, req.user.id]
+        const result = await client.query(
+            `UPDATE cart_items
+             SET quantity = $1
+             WHERE id = $2 AND user_id = $3
+             RETURNING *`,
+            [requestedQuantity, Number(cartItemId), req.user.id]
         );
 
-        res.json({
+        await client.query("COMMIT");
+
+        return res.json({
             message: "Cart quantity updated",
             cartItem: result.rows[0]
         });
-
     } catch (error) {
-        console.error("❌ Error updating cart:", error);
+        if (client) {
+            try {
+                await client.query("ROLLBACK");
+            } catch (rollbackError) {
+                console.error("Cart rollback error:", rollbackError);
+            }
+        }
 
-        res.status(500).json({
+        console.error("Error updating cart:", error);
+        return res.status(500).json({
             message: "Failed to update cart"
         });
+    } finally {
+        if (client) client.release();
     }
 });
 
 // REMOVE ITEM FROM CART
 router.delete("/:id", authMiddleware, async (req, res) => {
-    try {
-        const cartItemId = req.params.id;
+    const cartItemId = req.params.id;
 
+    if (!isPositiveInteger(cartItemId)) {
+        return res.status(400).json({
+            message: "Invalid cart item ID"
+        });
+    }
+
+    try {
         const result = await pool.query(
-            `
-            DELETE FROM cart_items
-            WHERE id = $1
-            AND user_id = $2
-            RETURNING *
-            `,
-            [cartItemId, req.user.id]
+            `DELETE FROM cart_items
+             WHERE id = $1 AND user_id = $2
+             RETURNING *`,
+            [Number(cartItemId), req.user.id]
         );
 
         if (result.rows.length === 0) {
@@ -199,15 +247,13 @@ router.delete("/:id", authMiddleware, async (req, res) => {
             });
         }
 
-        res.json({
+        return res.json({
             message: "Item removed from cart",
             cartItem: result.rows[0]
         });
-
     } catch (error) {
-        console.error("❌ Error removing cart item:", error);
-
-        res.status(500).json({
+        console.error("Error removing cart item:", error);
+        return res.status(500).json({
             message: "Failed to remove cart item"
         });
     }

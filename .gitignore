@@ -1,3 +1,27 @@
+# Environment variables and secrets
 .env
+.env.*
+!.env.example
+
+# Dependencies
 node_modules/
+
+# Frontend build output
+dist/
+dist-ssr/
+
+# PostgreSQL database backups
+Database/backups/
+
+# Temporary source-code backups
+*.bak
+*.backup.js
+*.before-fix.js
+
 Rough
+
+# Local recovery backups
+/backups/
+
+# Local code review notes
+/backend/orderRoutes-review.txt
