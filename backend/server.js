@@ -46,7 +46,8 @@ const PORT = process.env.PORT || 5000;
 
 
 const allowedOrigins = (
-    process.env.FRONTEND_URL || "http://localhost:5173"
+    process.env.FRONTEND_URL ||
+    "http://localhost:5173,https://02-the-plant-park.vercel.app"
 )
     .split(",")
     .map((origin) => origin.trim())
@@ -54,8 +55,8 @@ const allowedOrigins = (
 
 app.use(
     cors({
-        origin: allowedOrigins
-    })
+        origin: allowedOrigins,
+    }),
 );
 
 
