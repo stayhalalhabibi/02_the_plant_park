@@ -103,9 +103,15 @@ router.post("/", authMiddleware, async (req, res) => {
         await client.query("BEGIN");
 
         const cartResult = await client.query(
-            `SELECT ci.plant_id, ci.quantity, p.name, p.price, p.stock
-             FROM cart_items ci
-             JOIN plants p ON p.id = ci.plant_id
+            `SELECT
+    ci.plant_id,
+    ci.quantity,
+    p.name,
+    p.price,
+    p.stock,
+    p.is_active
+FROM cart_items ci
+JOIN plants p ON p.id = ci.plant_id
              WHERE ci.user_id = $1
              ORDER BY ci.plant_id
              FOR UPDATE OF ci, p`,
@@ -121,6 +127,13 @@ router.post("/", authMiddleware, async (req, res) => {
         }
 
         for (const item of cartResult.rows) {
+            if (!item.is_active) {
+    await client.query("ROLLBACK");
+
+    return res.status(409).json({
+        message: `${item.name} is currently unavailable. Please remove it from your cart.`
+    });
+}
             if (
                 !Number.isInteger(Number(item.quantity)) ||
                 Number(item.quantity) <= 0 ||

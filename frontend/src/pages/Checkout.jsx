@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import {
   getCart,
+  getCartPricing,
   createOrder,
   getOrder,
   createRazorpayOrder,
@@ -194,6 +195,7 @@ function Checkout() {
     setPendingOrderId(null);
   }, [pendingOrderStorageKey]);
 
+
   useEffect(() => {
     let cancelled = false;
 
@@ -213,6 +215,22 @@ function Checkout() {
           : response?.items ?? response?.cartItems ?? [];
 
         setCartItems(items);
+
+        // Load pricing preview when there is no pending order.
+        if (!pendingOrderId) {
+          try {
+            const pricingResponse = await getCartPricing(token);
+
+            if (!cancelled) {
+              setPricing(pricingResponse?.pricing ?? null);
+            }
+          } catch (pricingError) {
+            console.error(
+              "Unable to load pricing preview:",
+              pricingError
+            );
+          }
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err.message || "Unable to load your cart.");
@@ -229,7 +247,7 @@ function Checkout() {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, pendingOrderId]);
 
   // Recover the saved order details after a page refresh.
   useEffect(() => {

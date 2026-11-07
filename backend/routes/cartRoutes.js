@@ -2,6 +2,7 @@
 const express = require("express");
 const pool = require("../config/db");
 const authMiddleware = require("../middleware/authMiddleware");
+const { calculatePricing } = require("../utils/pricing");
 
 const router = express.Router();
 
@@ -14,6 +15,35 @@ function isPositiveInteger(value) {
         Number(value) > 0
     );
 }
+
+// GET CART PRICING PREVIEW
+router.get("/pricing", authMiddleware, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `
+            SELECT
+                p.price,
+                ci.quantity,
+                (p.price * ci.quantity) AS subtotal
+            FROM cart_items ci
+            JOIN plants p ON ci.plant_id = p.id
+            WHERE ci.user_id = $1
+            ORDER BY ci.id ASC
+            `,
+            [req.user.id]
+        );
+
+        const pricing = calculatePricing(result.rows);
+
+        return res.json({ pricing });
+    } catch (error) {
+        console.error("Error calculating cart pricing:", error);
+
+        return res.status(500).json({
+            message: "Failed to calculate cart pricing"
+        });
+    }
+});
 
 // GET USER CART
 router.get("/", authMiddleware, async (req, res) => {
@@ -29,7 +59,8 @@ router.get("/", authMiddleware, async (req, res) => {
                 p.image_url,
                 ci.quantity,
                 (p.price * ci.quantity) AS subtotal,
-                p.stock
+                p.stock,
+                p.is_active
             FROM cart_items ci
             JOIN plants p ON ci.plant_id = p.id
             WHERE ci.user_id = $1
@@ -67,10 +98,11 @@ router.post("/", authMiddleware, async (req, res) => {
 
         // Lock the plant row to serialize stock-sensitive cart changes.
         const plantResult = await client.query(
-            `SELECT id, name, price, stock
-             FROM plants
-             WHERE id = $1
-             FOR UPDATE`,
+            `SELECT id, name, price, stock, is_active
+FROM plants
+WHERE id = $1
+FOR UPDATE`,
+
             [plantId]
         );
 
@@ -82,6 +114,13 @@ router.post("/", authMiddleware, async (req, res) => {
         }
 
         const plant = plantResult.rows[0];
+        if (!plant.is_active) {
+    await client.query("ROLLBACK");
+
+    return res.status(409).json({
+        message: "This plant is currently unavailable."
+    });
+}
 
         const existingResult = await client.query(
             `SELECT id, quantity
@@ -162,9 +201,9 @@ router.put("/:id", authMiddleware, async (req, res) => {
         await client.query("BEGIN");
 
         const cartResult = await client.query(
-            `SELECT ci.id, ci.plant_id, p.name, p.stock
-             FROM cart_items ci
-             JOIN plants p ON p.id = ci.plant_id
+            `SELECT ci.id, ci.plant_id, p.name, p.stock, p.is_active
+FROM cart_items ci
+JOIN plants p ON p.id = ci.plant_id
              WHERE ci.id = $1 AND ci.user_id = $2
              FOR UPDATE OF ci, p`,
             [Number(cartItemId), req.user.id]
@@ -178,6 +217,13 @@ router.put("/:id", authMiddleware, async (req, res) => {
         }
 
         const item = cartResult.rows[0];
+        if (!item.is_active) {
+    await client.query("ROLLBACK");
+
+    return res.status(409).json({
+        message: "This plant is archived and cannot be purchased."
+    });
+}
         const requestedQuantity = Number(quantity);
 
         if (

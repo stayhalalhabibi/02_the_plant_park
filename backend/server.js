@@ -31,11 +31,15 @@ const pool = require("./config/db");
 
 const plantRoutes = require("./routes/plantRoutes");
 const categoryRoutes = require("./routes/categoryRoutes");
+const adminPlantRoutes = require("./routes/adminPlantRoutes");
 const authRoutes = require("./routes/authRoutes");
+const adminAuthRoutes = require("./routes/adminAuthRoutes");
+const adminManagementRoutes = require("./routes/adminManagementRoutes");
 const cartRoutes = require("./routes/cartRoutes");
 const favoriteRoutes = require("./routes/favoriteRoutes");
 const orderRoutes = require("./routes/orderRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
+const adminCustomerRoutes = require("./routes/adminCustomerRoutes");
 
 const app = express();
 app.use(helmet());
@@ -44,12 +48,11 @@ const PORT = process.env.PORT || 5000;
 
 // Middleware
 
-
 const allowedOrigins = (
-    process.env.FRONTEND_URL ||
-    "http://localhost:5173,https://02-the-plant-park.vercel.app"
+  process.env.FRONTEND_URL ||
+  "http://localhost:5173,http://localhost:5174,https://02-the-plant-park.vercel.app"
 )
-    .split(",")
+  .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
 
@@ -67,6 +70,10 @@ app.use(express.json({ limit: "100kb" }));
 app.use("/api/plants", plantRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/admin/auth", adminAuthRoutes);
+app.use("/api/admin/management", adminManagementRoutes);
+app.use("/api/admin/customers", adminCustomerRoutes);
+app.use("/api/admin/plants", adminPlantRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/favorites", favoriteRoutes);
 app.use("/api/orders", orderRoutes);

@@ -16,9 +16,10 @@ router.get("/", async (req, res) => {
                 plants.stock,
                 categories.name AS category
             FROM plants
-            LEFT JOIN categories
-            ON plants.category_id = categories.id
-            ORDER BY plants.id ASC
+LEFT JOIN categories
+ON plants.category_id = categories.id
+WHERE plants.is_active = TRUE
+ORDER BY plants.id ASC
         `);
 
         res.json(result.rows);

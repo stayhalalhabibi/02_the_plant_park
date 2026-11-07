@@ -12,6 +12,10 @@ import Account from "./pages/Account";
 import Favorites from "./pages/Favorites";
 import About from "./pages/About";
 import Contact from "./pages/Contact";
+import AdminLogin from "./pages/AdminLogin";
+import AdminDashboard from "./pages/AdminDashboard";
+import AdminAcceptInvitation from "./pages/AdminAcceptInvitation";
+
 
 import "./App.css";
 
@@ -131,10 +135,7 @@ const [searchQuery, setSearchQuery] = useState(
             {/* Header Actions */}
             <div className="header-actions">
 
-              <Link
-  to={localStorage.getItem("token") ? "/account" : "/login"}
-  className="header-action"
->
+            <Link to="/account" className="header-action">
   <span>♙</span>
   <span>Account</span>
 </Link>
@@ -171,19 +172,28 @@ const [searchQuery, setSearchQuery] = useState(
   path="/favorites"
   element={<Favorites onCartUpdate={refreshCartCount} />}
 />
-            <Route path="/about" element={<About />} />
-            <Route path="/contact" element={<Contact />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/account" element={<Account />} />
-            <Route
 
+<Route path="/about" element={<About />} />
+<Route path="/contact" element={<Contact />} />
+<Route path="/login" element={<Login />} />
+<Route path="/admin/login" element={<AdminLogin />} />
+<Route
+  path="/admin/dashboard"
+  element={<AdminDashboard />}
+/>
+<Route
+  path="/admin/accept-invitation"
+  element={<AdminAcceptInvitation />}
+/>
+<Route path="/account" element={<Account />} />
+<Route
   path="/cart"
   element={<Cart onCartUpdate={refreshCartCount} />}
 />
-            <Route path="/checkout" element={<Checkout />} />
-            <Route path="/order-success/:id" element={<OrderSuccess />} />
+<Route path="/checkout" element={<Checkout />} />
+<Route path="/order-success/:id" element={<OrderSuccess />} />
+</Routes>
 
-          </Routes>
         </main>
 
         {/* Footer */}

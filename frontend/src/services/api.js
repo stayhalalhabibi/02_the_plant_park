@@ -33,10 +33,34 @@ const apiRequest = async (endpoint, options = {}) => {
 
 const getPlants = () => apiRequest("/plants");
 
-const getCategories = () => apiRequest("/categories");
+// Admin Authentication
+const adminLogin = (email, password) =>
+  apiRequest("/admin/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
 
+const verifyAdminOtp = (email, otp) =>
+  apiRequest("/admin/auth/verify-otp", {
+    method: "POST",
+    body: JSON.stringify({ email, otp }),
+  });
+const acceptAdminInvitation = (token, password) =>
+  apiRequest("/admin/auth/accept-invitation", {
+    method: "POST",
+    body: JSON.stringify({ token, password }),
+  });
+
+const getCategories = () => apiRequest("/categories");
 const getCart = (token) =>
   apiRequest("/cart", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+const getCartPricing = (token) =>
+  apiRequest("/cart/pricing", {
     headers: {
       Authorization: `Bearer ${token}`,
     },
@@ -134,13 +158,124 @@ const verifyPayment = (paymentDetails, token) =>
     },
     body: JSON.stringify(paymentDetails),
   });
+  const getAdminPlants = (
+  token,
+  { page = 1, limit = 20, search = "", status = "all" } = {}
+) => {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+    search,
+    status,
+  });
+
+  return apiRequest(`/admin/plants?${params}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+};
+
+const getAdminPlant = (token, plantId) =>
+  apiRequest(`/admin/plants/${encodeURIComponent(plantId)}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+const createAdminPlant = (token, plantData) =>
+  apiRequest("/admin/plants", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(plantData),
+  });
+
+const updateAdminPlant = (token, plantId, plantData) =>
+  apiRequest(`/admin/plants/${encodeURIComponent(plantId)}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(plantData),
+  });
+
+const archiveAdminPlant = (token, plantId) =>
+  apiRequest(`/admin/plants/${encodeURIComponent(plantId)}/archive`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+const restoreAdminPlant = (token, plantId) =>
+  apiRequest(`/admin/plants/${encodeURIComponent(plantId)}/restore`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  const getAdminCustomers = (token, { page = 1, limit = 20, search = "" } = {}) => {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+    search,
+  });
+
+  return apiRequest(`/admin/customers?${params}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+};
+
+const getAdminCustomer = (token, customerId) =>
+  apiRequest(`/admin/customers/${encodeURIComponent(customerId)}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+const getAdminCustomerOrders = (
+  token,
+  customerId,
+  { page = 1, limit = 20 } = {}
+) => {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+  });
+
+  return apiRequest(
+    `/admin/customers/${encodeURIComponent(customerId)}/orders?${params}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+};
 
 export {
   API_BASE_URL,
   apiRequest,
+  adminLogin,
+  acceptAdminInvitation,
+  verifyAdminOtp,
+  getAdminPlants,
+  getAdminPlant,
+  createAdminPlant,
+  updateAdminPlant,
+  archiveAdminPlant,
+  restoreAdminPlant,
+  getAdminCustomers,
+  getAdminCustomer,
+  getAdminCustomerOrders,
   getPlants,
   getCategories,
   getCart,
+  getCartPricing,
   addToCart,
   updateCartItem,
   removeCartItem,

@@ -108,6 +108,27 @@ function verifySignature(orderId, paymentId, signature, secret) {
                 message: "Order is not available for payment"
             });
         }
+                const archivedItemsResult = await client.query(
+            `
+            SELECT p.id, p.name
+            FROM order_items oi
+            JOIN plants p ON p.id = oi.plant_id
+            WHERE oi.order_id = $1
+              AND p.is_active = FALSE
+            LIMIT 1
+            `,
+            [order.id]
+        );
+
+        if (archivedItemsResult.rows.length > 0) {
+            await client.query("ROLLBACK");
+            transactionStarted = false;
+
+            return res.status(409).json({
+                message:
+                    "This order contains an archived plant and cannot be paid. Please create a new order."
+            });
+        }
 
         const amount = Math.round(Number(order.total_amount) * 100);
 
@@ -421,7 +442,8 @@ router.post("/verify-payment", authMiddleware, async (req, res) => {
                 p.id AS plant_id,
                 p.name AS plant_name,
                 p.stock,
-                requested.quantity
+p.is_active,
+requested.quantity
             FROM (
                 SELECT
                     plant_id,
@@ -479,12 +501,13 @@ router.post("/verify-payment", authMiddleware, async (req, res) => {
                 const quantity = Number(item.quantity);
 
                 return (
-                    !Number.isSafeInteger(quantity) ||
-                    quantity <= 0 ||
-                    item.stock === null ||
-                    !Number.isSafeInteger(Number(item.stock)) ||
-                    Number(item.stock) < quantity
-                );
+    !item.is_active ||
+    !Number.isSafeInteger(quantity) ||
+    quantity <= 0 ||
+    item.stock === null ||
+    !Number.isSafeInteger(Number(item.stock)) ||
+    Number(item.stock) < quantity
+);
             })
             .map((item) => ({
                 plant_id: item.plant_id,
