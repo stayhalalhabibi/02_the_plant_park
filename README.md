@@ -383,7 +383,7 @@ Install the following:
 ### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/akshayjoshi252075-rgb/02_the_plant_park.git
+git clone https://github.com/stayhalalhabibi/02_the_plant_park
 ```
 
 ```bash
